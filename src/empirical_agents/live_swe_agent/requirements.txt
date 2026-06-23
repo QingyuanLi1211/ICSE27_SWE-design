@@ -1,0 +1,9 @@
+Jinja2==3.1.6
+litellm==1.83.8
+platformdirs==4.9.6
+prompt_toolkit==3.0.52
+pydantic==2.12.5
+python-dotenv==1.0.1
+PyYAML==6.0.3
+rich==15.0.0
+typer==0.23.1

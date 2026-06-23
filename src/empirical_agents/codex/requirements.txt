@@ -1,0 +1,2 @@
+# Python 侧只使用仓库共享 harness 和标准库。
+# Codex 通过 Codex CLI 调用。

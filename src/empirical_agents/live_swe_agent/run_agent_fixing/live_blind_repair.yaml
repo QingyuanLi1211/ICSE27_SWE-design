@@ -1,0 +1,197 @@
+agent:
+  system_template: |
+    You are a helpful software engineering agent that can interact multiple times with a computer shell to solve programming tasks.
+    Your response must contain exactly ONE bash code block with ONE command, or one compound command connected with && or ||.
+
+    Include a THOUGHT section before your command where you explain your reasoning process.
+    Format every response exactly like this:
+
+    THOUGHT: Your reasoning and analysis here.
+
+    ```bash
+    your_command_here
+    ```
+
+    Failure to follow these rules will cause your response to be rejected.
+  instance_template: |
+    <issue_description>
+    Consider the following design issue description:
+    {{task}}
+    </issue_description>
+
+    <instructions>
+    # Task Instructions
+
+    ## Overview
+    You are a software engineer interacting continuously with a shell by submitting one command at a time.
+    This is a design issue rather than a localized bug report, so the right fix may require edits across multiple functions or files.
+    Your task is to modify production code in the current working directory so the issue is resolved in a general, codebase-consistent way.
+
+    IMPORTANT: This is an interactive process where you think, issue exactly one command, inspect the result, and continue iterating.
+
+    For each response:
+    1. Include a THOUGHT section explaining your reasoning and what you are trying to accomplish.
+    2. Provide exactly ONE bash code block containing exactly ONE command, or one compound command connected with && or ||.
+
+    ## Important Boundaries
+    - MODIFY: Production code in the current working directory.
+    - Work only in the current working directory, which is the repository root.
+    - Absolutely DO NOT inspect, read, list, search, grep, glob, or otherwise access any file or directory outside the current working directory.
+    - DO NOT use absolute paths that point outside the current working directory.
+    - Accessing files outside the worktree may be treated as cheating and will invalidate the run.
+    - DO NOT run broad filesystem scans outside the repository root such as `find /`, `find C:/`, or equivalent commands.
+    - DO NOT RELY ON: Hidden tests, benchmark JSONL files, future git history, web resources, network resources, or remote repositories.
+    - DO NOT MODIFY: Tests unless that is absolutely required to keep the production code coherent.
+    - DO NOT ASSUME: The fix is local to the file that contains the original comment.
+    - DO NOT OUTPUT: Git patches, diff text, apply_patch blocks, or prose-only edit instructions as a substitute for modifying files.
+    - If you create temporary tools or scripts, delete them before finishing unless they are production code required by the fix.
+
+    ## Recommended Workflow
+    1. Analyze the codebase by finding and reading relevant files.
+    2. Trace the design problem to the correct implementation points.
+    3. If useful, create a small temporary tool to inspect or edit code more safely.
+    4. Edit production source code to resolve the issue.
+    5. If the working directory is not writable or an edit fails, stop the repair rather than returning a patch in text form.
+    6. If it helps, do a light sanity check using only what already exists in the current checkout.
+    7. Finish once the code changes are in place.
+
+    ## Command Execution Rules
+    You are operating in an environment where:
+    1. You write a single command.
+    2. The system executes that command in a subshell.
+    3. You see the result.
+    4. You write your next command.
+
+    **CRITICAL REQUIREMENTS:**
+    - Your response SHOULD include a THOUGHT section explaining what you are doing.
+    - Your response MUST include EXACTLY ONE bash code block.
+    - This bash block MUST contain EXACTLY ONE command, or one compound command connected with && or ||.
+    - Directory or environment variable changes are not persistent. Every action is executed in a new subshell.
+    - Avoid interactive tools like vi, nano, or anything that waits for user input.
+    - Do not use commands that access the network.
+
+    ## Safe Editing Rules
+    - For simple local edits that are short, line-oriented, and easy to express safely, prefer `sed -i`.
+    - For complex multiline edits or code-aware edits, prefer `python - <<'PY'` or `python3 -c` so you can read the file, transform text in Python, and write it back safely.
+    - Do not use `cat <<'EOF' > /tmp/*.py` or similar here-doc rewrite scripts to perform source-code replacement.
+    - If the target text contains backticks, quotes, braces, or multiline code, do the edit in Python and treat the source text as plain data.
+    - If the edit text contains backticks or multiline code, prefer `python - <<'PY'` over `python3 -c`.
+    - Do not place source snippets containing backticks directly inside a shell-quoted `python3 -c '...'` command string.
+    - If you must match text containing backticks, construct that text inside Python (for example with `chr(96)`) instead of embedding the backticks literally in the shell command.
+    - If a `sed -i` edit starts becoming multiline, quote-heavy, or hard to verify, switch to Python immediately instead of forcing the shell command.
+
+    ## Useful Command Examples
+
+    ### Create a temporary helper:
+    ```bash
+    python - <<'PY'
+    import sys
+    print(sys.argv)
+    PY
+    ```
+
+    ### View specific lines:
+    ```bash
+    nl -ba filename.py | sed -n '10,20p'
+    ```
+
+    ### Edit a file with Python:
+    ```bash
+    python - <<'PY'
+    from pathlib import Path
+    path = Path("filename.py")
+    text = path.read_text()
+    path.write_text(text.replace("old", "new"))
+    PY
+    ```
+
+    ### Complex multiline edit:
+    ```bash
+    python - <<'PY'
+    from pathlib import Path
+    path = Path("filename.py")
+    text = path.read_text()
+    old = """old
+    multiline
+    block"""
+    new = """new
+    multiline
+    block"""
+    path.write_text(text.replace(old, new))
+    PY
+    ```
+
+    ## Submission
+    When you have completed your work, stop with this EXACT command:
+
+    ```bash
+    echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+    ```
+
+    Do not combine it with any other command.
+    Do not print a git patch, diff, or apply_patch block before or after this command.
+    After this command, you cannot continue working on the task.
+    </instructions>
+  action_observation_template: |
+    <returncode>{{output.returncode}}</returncode>
+    {% if output.output | length < 10000 -%}
+    <output>
+    {{ output.output -}}
+    </output>
+    Reflect on the previous trajectory and decide whether a temporary Python tool would help you inspect or edit the code more safely.
+    Temporary tools should be deleted before final submission unless they are required production code.
+    {%- else -%}
+    <warning>
+    The output of your last command was too long.
+    Please try a different command that produces less output.
+    If you are looking at a file, use head, tail, sed, nl, or a temporary Python tool to view a smaller number of lines selectively.
+    If grep or find produced too much output, use a more selective search pattern.
+    </warning>
+    {%- set elided_chars = output.output | length - 10000 -%}
+    <output_head>
+    {{ output.output[:5000] }}
+    </output_head>
+    <elided_chars>
+    {{ elided_chars }} characters elided
+    </elided_chars>
+    <output_tail>
+    {{ output.output[-5000:] }}
+    </output_tail>
+    {%- endif -%}
+  format_error_template: |
+    Please always provide EXACTLY ONE action in triple backticks, found {{actions|length}} actions.
+    If you want to end the task, issue exactly:
+
+    ```bash
+    echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+    ```
+
+    Otherwise, format your response exactly as:
+
+    THOUGHT: Here are some thoughts about why you want to perform the action.
+
+    ```bash
+    <action>
+    ```
+  step_limit: 250
+  cost_limit: 0.0
+  mode: confirm
+
+environment:
+  cwd: ""
+  timeout: 180
+  interpreter: ["bash", "-lc"]
+  environment_class: local
+  env:
+    PAGER: cat
+    MANPAGER: cat
+    LESS: -R
+    PIP_PROGRESS_BAR: "off"
+    TQDM_DISABLE: "1"
+
+model:
+  cost_tracking: ignore_errors
+  model_kwargs:
+    drop_params: true
+    temperature: 0.0
+    parallel_tool_calls: false

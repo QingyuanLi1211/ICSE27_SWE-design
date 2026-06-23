@@ -1,0 +1,183 @@
+diff --git a/src/com/facebook/buck/android/AndroidBinaryResourcesGraphEnhancer.java b/src/com/facebook/buck/android/AndroidBinaryResourcesGraphEnhancer.java
+index 1c59541..106407e 100644
+--- a/src/com/facebook/buck/android/AndroidBinaryResourcesGraphEnhancer.java
++++ b/src/com/facebook/buck/android/AndroidBinaryResourcesGraphEnhancer.java
+@@ -257,7 +257,9 @@ class AndroidBinaryResourcesGraphEnhancer {
+       ruleResolver.addToIndex(generateRDotJava.get());
+ 
+       if (shouldBuildStringSourceMap) {
+-        ruleResolver.addToIndex(createGenerateStringSourceMap());
++        ruleResolver.addToIndex(
++            createGenerateStringSourceMap(
++                pathToRDotTxt, filteredResourcesProvider.getResDirectories()));
+       }
+     }
+ 
+@@ -334,16 +336,19 @@ class AndroidBinaryResourcesGraphEnhancer {
+         bannedDuplicateResourceTypes,
+         pathToRDotTxtFile,
+         resourceUnionPackage,
+-        shouldBuildStringSourceMap,
+         resourceDeps,
+         resourcesProvider);
+   }
+ 
+-  private GenerateStringSourceMap createGenerateStringSourceMap() {
++  private GenerateStringSourceMap createGenerateStringSourceMap(
++      SourcePath pathToRDotTxtFile,
++      ImmutableList<SourcePath> resDirectories) {
+     return new GenerateStringSourceMap(
+         buildTarget.withAppendedFlavors(GENERATE_STRING_SOURCE_MAP_FLAVOR),
+         projectFilesystem,
+-        ruleFinder);
++        ruleFinder,
++        pathToRDotTxtFile,
++        resDirectories);
+   }
+ 
+   private ResourcesFilter createResourcesFilter(
+diff --git a/src/com/facebook/buck/android/GenerateRDotJava.java b/src/com/facebook/buck/android/GenerateRDotJava.java
+index ffcfe28..33058c8 100644
+--- a/src/com/facebook/buck/android/GenerateRDotJava.java
++++ b/src/com/facebook/buck/android/GenerateRDotJava.java
+@@ -47,7 +47,6 @@ public class GenerateRDotJava extends AbstractBuildRule {
+   @AddToRuleKey private final SourcePath pathToRDotTxtFile;
+   @AddToRuleKey private final Optional<SourcePath> pathToOverrideSymbolsFile;
+   @AddToRuleKey private Optional<String> resourceUnionPackage;
+-  @AddToRuleKey private boolean shouldBuildStringSourceMap;
+ 
+   private final ImmutableList<HasAndroidResourceDeps> resourceDeps;
+   private FilteredResourcesProvider resourcesProvider;
+@@ -62,7 +61,6 @@ public class GenerateRDotJava extends AbstractBuildRule {
+       EnumSet<RDotTxtEntry.RType> bannedDuplicateResourceTypes,
+       SourcePath pathToRDotTxtFile,
+       Optional<String> resourceUnionPackage,
+-      boolean shouldBuildStringSourceMap,
+       ImmutableSortedSet<BuildRule> resourceDeps,
+       FilteredResourcesProvider resourcesProvider) {
+     super(buildTarget, projectFilesystem);
+@@ -70,7 +68,6 @@ public class GenerateRDotJava extends AbstractBuildRule {
+     this.bannedDuplicateResourceTypes = bannedDuplicateResourceTypes;
+     this.pathToRDotTxtFile = pathToRDotTxtFile;
+     this.resourceUnionPackage = resourceUnionPackage;
+-    this.shouldBuildStringSourceMap = shouldBuildStringSourceMap;
+     this.allResourceDeps = resourceDeps;
+     this.resourceDeps =
+         resourceDeps
+@@ -121,29 +118,7 @@ public class GenerateRDotJava extends AbstractBuildRule {
+             resourceUnionPackage);
+     steps.add(mergeStep);
+ 
+-    if (shouldBuildStringSourceMap) {
+-      // Make sure we have an output directory
+-      Path outputDirPath = getPathForNativeStringInfoDirectory();
+-
+-      steps.addAll(
+-          MakeCleanDirectoryStep.of(
+-              BuildCellRelativePath.fromCellRelativePath(
+-                  buildContext.getBuildCellRootPath(), getProjectFilesystem(), outputDirPath)));
+-
+-      // Add the step that parses R.txt and all the strings.xml files, and
+-      // produces a JSON with android resource id's and xml paths for each string resource.
+-      GenStringSourceMapStep genNativeStringInfo =
+-          new GenStringSourceMapStep(
+-              getProjectFilesystem(),
+-              rDotTxtPath.getParent(),
+-              resourcesProvider.getRelativeResDirectories(
+-                  getProjectFilesystem(), buildContext.getSourcePathResolver()),
+-              outputDirPath);
+-      steps.add(genNativeStringInfo);
+-
+-      // Cache the generated strings.json file, it will be stored inside outputDirPath
+-      buildableContext.recordArtifact(outputDirPath);
+-    }
++    // shouldBuildStringSourceMap is now handled by GenerateStringSourceMap
+ 
+     // Ensure the generated R.txt and R.java files are also recorded.
+     buildableContext.recordArtifact(rDotJavaSrc);
+@@ -161,10 +136,7 @@ public class GenerateRDotJava extends AbstractBuildRule {
+     return BuildTargets.getScratchPath(filesystem, buildTarget, "__%s_rdotjava_src__");
+   }
+ 
+-  private Path getPathForNativeStringInfoDirectory() {
+-    return BuildTargets.getScratchPath(
+-        getProjectFilesystem(), getBuildTarget(), "__%s_string_source_map__");
+-  }
++
+ 
+   public SourcePath getSourcePathToGeneratedRDotJavaSrcFiles() {
+     return new ExplicitBuildTargetSourcePath(
+diff --git a/src/com/facebook/buck/android/GenerateStringSourceMap.java b/src/com/facebook/buck/android/GenerateStringSourceMap.java
+index 8631847..4eeb522 100644
+--- a/src/com/facebook/buck/android/GenerateStringSourceMap.java
++++ b/src/com/facebook/buck/android/GenerateStringSourceMap.java
+@@ -28,6 +28,7 @@ import com.facebook.buck.rules.BuildableSupport;
+ import com.facebook.buck.rules.ExplicitBuildTargetSourcePath;
+ import com.facebook.buck.rules.HasRuntimeDeps;
+ import com.facebook.buck.rules.SourcePath;
++import com.facebook.buck.rules.AddToRuleKey;
+ import com.facebook.buck.rules.SourcePathRuleFinder;
+ import com.facebook.buck.step.Step;
+ import com.facebook.buck.step.fs.MakeCleanDirectoryStep;
+@@ -40,18 +41,21 @@ import java.util.stream.Stream;
+ import javax.annotation.Nullable;
+ 
+ public class GenerateStringSourceMap extends AbstractBuildRule implements HasRuntimeDeps {
++  @AddToRuleKey private final SourcePath pathToRDotTxtFile;
++  @AddToRuleKey private final ImmutableList<SourcePath> resDirectories;
++
+   private final SourcePathRuleFinder ruleFinder;
+-  // TODO(gvbharath): Create SourcePath fields for any input files needed
+-  // ...
+-  // @AddToRuleKey private final ImmutableList<SourcePath> resources;
+-  // @AddToRuleKey private final SourcePath someInput;
+ 
+   protected GenerateStringSourceMap(
+       BuildTarget buildTarget,
+       ProjectFilesystem projectFilesystem,
+-      SourcePathRuleFinder ruleFinder) {
++      SourcePathRuleFinder ruleFinder,
++      SourcePath pathToRDotTxtFile,
++      ImmutableList<SourcePath> resDirectories) {
+     super(buildTarget, projectFilesystem);
+     this.ruleFinder = ruleFinder;
++    this.pathToRDotTxtFile = pathToRDotTxtFile;
++    this.resDirectories = resDirectories;
+   }
+ 
+   @Override
+@@ -71,12 +75,17 @@ public class GenerateStringSourceMap extends AbstractBuildRule implements HasRun
+             BuildCellRelativePath.fromCellRelativePath(
+                 context.getBuildCellRootPath(), getProjectFilesystem(), outputDirPath)));
+ 
+-    // TODO(gvbharath): Construct this step. See GenerateRDotJava.
+-    // GenStringSourceMapStep genNativeStringInfo = ...;
+-    // steps.add(genNativeStringInfo);
+-    steps.add(
+-        new WriteFileStep(
+-            getProjectFilesystem(), "some data", outputDirPath.resolve("map.json"), false));
++    GenStringSourceMapStep genNativeStringInfo =
++        new GenStringSourceMapStep(
++            getProjectFilesystem(),
++            context.getSourcePathResolver().getAbsolutePath(pathToRDotTxtFile).getParent(),
++            resDirectories
++                .stream()
++                .map(context.getSourcePathResolver()::getAbsolutePath)
++                .map(getProjectFilesystem()::relativize)
++                .collect(ImmutableList.toImmutableList()),
++            outputDirPath);
++    steps.add(genNativeStringInfo);
+ 
+     // Cache the generated strings.json file, it will be stored inside outputDirPath
+     buildableContext.recordArtifact(outputDirPath);
+@@ -97,9 +106,6 @@ public class GenerateStringSourceMap extends AbstractBuildRule implements HasRun
+ 
+   @Override
+   public Stream<BuildTarget> getRuntimeDeps(SourcePathRuleFinder ruleFinder) {
+-    // TODO(gvbharath): Construct list of SourcePaths that need to exist after building this rule
+-    // (whatever is specified in the map that we need to also access).
+-    ImmutableList<SourcePath> inputs = ImmutableList.of();
+-    return ruleFinder.filterBuildRuleInputs(inputs).stream().map(BuildRule::getBuildTarget);
++    return ruleFinder.filterBuildRuleInputs(resDirectories).stream().map(BuildRule::getBuildTarget);
+   }
+ }

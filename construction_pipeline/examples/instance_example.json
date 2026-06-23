@@ -1,0 +1,23 @@
+{
+  "instances": [
+    {
+      "id": "pandas__001",
+      "repo": "pandas-dev/pandas",
+      "repo_source": "C:/repos/pandas",
+      "commit_after": "abcdef1234567890abcdef1234567890abcdef12",
+      "design_issue_comment": "the original design issue comment",
+      "full_patch": "diff --git a/pandas/core/frame.py b/pandas/core/frame.py\n...",
+      "issue_code": "def buggy_func(...):\n    ...",
+      "clean_code": "def buggy_func(...):\n    ...",
+      "seed_testfile_path": "pandas/tests/frame/test_fillna.py",
+      "docker_required": true,
+      "repo_version": "py311-pandas-v1",
+      "base_image_key": "python311-slim-bookworm",
+      "container_repo_root": "/workspace/repo",
+      "docker_exec_template": "docker exec codex-pandas__001 sh -lc \"cd /workspace/repo && __CMD__\"",
+      "docker_build_hint": "base: python:3.11-slim-bookworm + git build-essential curl; env image should be grouped by repo_version=py311-pandas-v1; instance image should default to pandas__001; env: upgrade pip/setuptools/wheel, install requirements-dev.txt if present, then pip install -e .; instance: container name codex-pandas__001, repo root /workspace/repo, run variants in clean copies/worktrees.",
+      "install_or_bootstrap_hint": "python -m pip install -U pip setuptools wheel && pip install -r requirements-dev.txt && pip install -e .",
+      "test_command_hint": "pytest pandas/tests/frame/test_fillna.py -k fillna"
+    }
+  ]
+}

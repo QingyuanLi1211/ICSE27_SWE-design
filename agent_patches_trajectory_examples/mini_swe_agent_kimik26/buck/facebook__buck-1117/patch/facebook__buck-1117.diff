@@ -1,0 +1,137 @@
+diff --git a/src/com/facebook/buck/android/AndroidBinaryResourcesGraphEnhancer.java b/src/com/facebook/buck/android/AndroidBinaryResourcesGraphEnhancer.java
+index 1c59541..db5ff2c 100644
+--- a/src/com/facebook/buck/android/AndroidBinaryResourcesGraphEnhancer.java
++++ b/src/com/facebook/buck/android/AndroidBinaryResourcesGraphEnhancer.java
+@@ -257,7 +257,11 @@ class AndroidBinaryResourcesGraphEnhancer {
+       ruleResolver.addToIndex(generateRDotJava.get());
+ 
+       if (shouldBuildStringSourceMap) {
+-        ruleResolver.addToIndex(createGenerateStringSourceMap());
++        ruleResolver.addToIndex(
++            createGenerateStringSourceMap(
++                pathToRDotTxt,
++                getTargetsAsRules(resourceDetails.getResourcesWithNonEmptyResDir()),
++                filteredResourcesProvider));
+       }
+     }
+ 
+@@ -339,11 +343,17 @@ class AndroidBinaryResourcesGraphEnhancer {
+         resourcesProvider);
+   }
+ 
+-  private GenerateStringSourceMap createGenerateStringSourceMap() {
++  private GenerateStringSourceMap createGenerateStringSourceMap(
++      SourcePath pathToRDotTxtFile,
++      ImmutableSortedSet<BuildRule> resourceDeps,
++      FilteredResourcesProvider resourcesProvider) {
+     return new GenerateStringSourceMap(
+         buildTarget.withAppendedFlavors(GENERATE_STRING_SOURCE_MAP_FLAVOR),
+         projectFilesystem,
+-        ruleFinder);
++        ruleFinder,
++        pathToRDotTxtFile,
++        resourceDeps,
++        resourcesProvider);
+   }
+ 
+   private ResourcesFilter createResourcesFilter(
+diff --git a/src/com/facebook/buck/android/GenerateStringSourceMap.java b/src/com/facebook/buck/android/GenerateStringSourceMap.java
+index 8631847..ba8e12f 100644
+--- a/src/com/facebook/buck/android/GenerateStringSourceMap.java
++++ b/src/com/facebook/buck/android/GenerateStringSourceMap.java
+@@ -24,40 +24,48 @@ import com.facebook.buck.rules.AbstractBuildRule;
+ import com.facebook.buck.rules.BuildContext;
+ import com.facebook.buck.rules.BuildRule;
+ import com.facebook.buck.rules.BuildableContext;
+-import com.facebook.buck.rules.BuildableSupport;
+ import com.facebook.buck.rules.ExplicitBuildTargetSourcePath;
+-import com.facebook.buck.rules.HasRuntimeDeps;
++import com.facebook.buck.rules.AddToRuleKey;
+ import com.facebook.buck.rules.SourcePath;
+ import com.facebook.buck.rules.SourcePathRuleFinder;
+ import com.facebook.buck.step.Step;
+ import com.facebook.buck.step.fs.MakeCleanDirectoryStep;
+-import com.facebook.buck.step.fs.WriteFileStep;
+-import com.facebook.buck.util.MoreCollectors;
++import com.google.common.collect.ImmutableSortedSet;
+ import com.google.common.collect.ImmutableList;
+ import java.nio.file.Path;
+ import java.util.SortedSet;
+-import java.util.stream.Stream;
+ import javax.annotation.Nullable;
+ 
+-public class GenerateStringSourceMap extends AbstractBuildRule implements HasRuntimeDeps {
++public class GenerateStringSourceMap extends AbstractBuildRule {
++  @AddToRuleKey private final SourcePath pathToRDotTxtFile;
++  private final FilteredResourcesProvider resourcesProvider;
++  private final ImmutableSortedSet<BuildRule> resourceDeps;
+   private final SourcePathRuleFinder ruleFinder;
+-  // TODO(gvbharath): Create SourcePath fields for any input files needed
+-  // ...
+-  // @AddToRuleKey private final ImmutableList<SourcePath> resources;
+-  // @AddToRuleKey private final SourcePath someInput;
+ 
+   protected GenerateStringSourceMap(
+       BuildTarget buildTarget,
+       ProjectFilesystem projectFilesystem,
+-      SourcePathRuleFinder ruleFinder) {
++      SourcePathRuleFinder ruleFinder,
++      SourcePath pathToRDotTxtFile,
++      ImmutableSortedSet<BuildRule> resourceDeps,
++      FilteredResourcesProvider resourcesProvider) {
+     super(buildTarget, projectFilesystem);
+     this.ruleFinder = ruleFinder;
++    this.pathToRDotTxtFile = pathToRDotTxtFile;
++    this.resourceDeps = resourceDeps;
++    this.resourcesProvider = resourcesProvider;
+   }
+ 
+   @Override
+   public SortedSet<BuildRule> getBuildDeps() {
+-    return BuildableSupport.deriveDeps(this, ruleFinder)
+-        .collect(MoreCollectors.toImmutableSortedSet());
++    ImmutableSortedSet.Builder<BuildRule> builder = ImmutableSortedSet.naturalOrder();
++    builder
++        .addAll(
++            ruleFinder.filterBuildRuleInputs(
++                pathToRDotTxtFile, resourcesProvider.getOverrideSymbolsPath().orElse(null)))
++        .addAll(resourceDeps);
++    resourcesProvider.getResourceFilterRule().ifPresent(builder::add);
++    return builder.build();
+   }
+ 
+   @Override
+@@ -71,12 +79,15 @@ public class GenerateStringSourceMap extends AbstractBuildRule implements HasRun
+             BuildCellRelativePath.fromCellRelativePath(
+                 context.getBuildCellRootPath(), getProjectFilesystem(), outputDirPath)));
+ 
+-    // TODO(gvbharath): Construct this step. See GenerateRDotJava.
+-    // GenStringSourceMapStep genNativeStringInfo = ...;
+-    // steps.add(genNativeStringInfo);
+-    steps.add(
+-        new WriteFileStep(
+-            getProjectFilesystem(), "some data", outputDirPath.resolve("map.json"), false));
++    Path rDotTxtPath = context.getSourcePathResolver().getAbsolutePath(pathToRDotTxtFile);
++    GenStringSourceMapStep genNativeStringInfo =
++        new GenStringSourceMapStep(
++            getProjectFilesystem(),
++            rDotTxtPath.getParent(),
++            resourcesProvider.getRelativeResDirectories(
++                getProjectFilesystem(), context.getSourcePathResolver()),
++            outputDirPath);
++    steps.add(genNativeStringInfo);
+ 
+     // Cache the generated strings.json file, it will be stored inside outputDirPath
+     buildableContext.recordArtifact(outputDirPath);
+@@ -95,11 +106,4 @@ public class GenerateStringSourceMap extends AbstractBuildRule implements HasRun
+         getBuildTarget(), getPathForNativeStringInfoDirectory());
+   }
+ 
+-  @Override
+-  public Stream<BuildTarget> getRuntimeDeps(SourcePathRuleFinder ruleFinder) {
+-    // TODO(gvbharath): Construct list of SourcePaths that need to exist after building this rule
+-    // (whatever is specified in the map that we need to also access).
+-    ImmutableList<SourcePath> inputs = ImmutableList.of();
+-    return ruleFinder.filterBuildRuleInputs(inputs).stream().map(BuildRule::getBuildTarget);
+-  }
+ }

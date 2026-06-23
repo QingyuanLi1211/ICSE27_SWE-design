@@ -1,0 +1,2 @@
+# Python 侧只使用仓库共享 harness 和标准库。
+# Claude Code CLI 通过 npm 安装：npm install -g @anthropic-ai/claude-code

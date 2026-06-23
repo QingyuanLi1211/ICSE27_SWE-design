@@ -1,0 +1,9 @@
+{
+  "eval_workspace_prepared": true,
+  "trigger_test_patch_applied": true,
+  "regression_test_patch_applied": null,
+  "agent_patch_applied": true,
+  "trigger_test_passed": true,
+  "regression_test_passed": true,
+  "agent_patch_passed": true
+}

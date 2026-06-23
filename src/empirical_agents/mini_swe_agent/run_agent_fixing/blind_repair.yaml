@@ -1,0 +1,95 @@
+agent:
+  instance_template: |
+    <issue_description>
+    Consider the following design issue description:
+    {{task}}
+    </issue_description>
+
+    <instructions>
+    # Task Instructions
+
+    ## Overview
+
+    You're a software engineer interacting continuously with a computer by submitting commands.
+    You'll be helping implement necessary changes to meet requirements in the issue description.
+    This is a design issue rather than a localized bug report, so the right fix may require edits across multiple functions or files.
+    Your task is to modify production code in the current working directory so the issue is resolved in a general, codebase-consistent way.
+
+    <IMPORTANT>This is an interactive process where you will think, issue at least one command, inspect the result, and then continue iterating.</IMPORTANT>
+
+    For each response:
+
+    1. Include reasoning text explaining what you're trying to accomplish
+    2. Provide one or more bash tool calls to execute
+
+    ## Important Boundaries
+
+    - MODIFY: Production code in the current working directory
+    - The current working directory is the repository root; DO NOT cd outside it.
+    - Absolutely DO NOT inspect, read, list, search, grep, glob, or otherwise access any file or directory outside the current working directory.
+    - DO NOT use absolute paths that point outside the current working directory.
+    - Accessing files outside the worktree may be treated as cheating and will invalidate the run.
+    - DO NOT run broad filesystem scans outside the repository root such as `find /`, `find C:/`, or equivalent commands.
+    - DO NOT RELY ON: Hidden tests, benchmark JSONL files, future git history, or web/network resources
+    - DO NOT MODIFY: Tests unless that is absolutely required to keep the code coherent
+    - DO NOT ASSUME: The fix is local to the file that contains the original comment
+    - DO NOT OUTPUT: Git patches, diff text, apply_patch blocks, or prose-only edit instructions as a substitute for modifying files
+
+    ## Recommended Workflow
+
+    1. Analyze the codebase by finding and reading relevant files
+    2. Trace the design problem to the correct implementation points
+    3. Edit the source code to resolve the issue
+    4. If the working directory is not writable or an edit fails, stop the repair rather than returning a patch in text form
+    5. If it helps, do a light sanity check using only what already exists in the current checkout
+    6. Finish once the code changes are in place
+
+    ## Command Execution Rules
+
+    You are operating in an environment where
+
+    1. You issue at least one command
+    2. The system executes the command(s) in a subshell
+    3. You see the result(s)
+    4. You write your next command(s)
+
+    Each response should include:
+
+    1. Reasoning text where you explain your analysis and plan
+    2. At least one bash tool call with your command
+
+    **CRITICAL REQUIREMENTS:**
+
+    - Your response SHOULD include reasoning text explaining what you're doing
+    - Your response MUST include AT LEAST ONE bash tool call
+    - Directory or environment variable changes are not persistent. Every action is executed in a new subshell.
+    - However, you can prefix any action with `MY_ENV_VAR=MY_VALUE cd /path/to/working/dir && ...` or write/load environment variables from files
+    - Avoid interactive tools like `vi`, `nano`, or anything that waits for user input
+
+    ## Submission
+
+    When you've completed your work, you MUST stop with this EXACT command:
+
+    ```bash
+    echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+    ```
+
+    Do not combine it with any other command.
+    Do not print a git patch, diff, or apply_patch block before or after this command.
+    After this command, you cannot continue working on the task.
+    </instructions>
+  step_limit: 250
+  cost_limit: 0.0
+
+environment:
+  cwd: ""
+  timeout: 180
+  interpreter: ["bash", "-lc"]
+  environment_class: local
+
+model:
+  cost_tracking: ignore_errors
+  model_kwargs:
+    drop_params: true
+    temperature: 0.0
+    parallel_tool_calls: true

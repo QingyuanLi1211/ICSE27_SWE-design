@@ -1,0 +1,177 @@
+diff --git a/src/com/facebook/buck/android/AndroidBinaryResourcesGraphEnhancer.java b/src/com/facebook/buck/android/AndroidBinaryResourcesGraphEnhancer.java
+index 1c59541..0a13d92 100644
+--- a/src/com/facebook/buck/android/AndroidBinaryResourcesGraphEnhancer.java
++++ b/src/com/facebook/buck/android/AndroidBinaryResourcesGraphEnhancer.java
+@@ -257,7 +257,9 @@ class AndroidBinaryResourcesGraphEnhancer {
+       ruleResolver.addToIndex(generateRDotJava.get());
+ 
+       if (shouldBuildStringSourceMap) {
+-        ruleResolver.addToIndex(createGenerateStringSourceMap());
++        ruleResolver.addToIndex(
++            createGenerateStringSourceMap(
++                pathToRDotTxt, filteredResourcesProvider.getResDirectories()));
+       }
+     }
+ 
+@@ -339,11 +341,14 @@ class AndroidBinaryResourcesGraphEnhancer {
+         resourcesProvider);
+   }
+ 
+-  private GenerateStringSourceMap createGenerateStringSourceMap() {
++  private GenerateStringSourceMap createGenerateStringSourceMap(
++      SourcePath pathToRDotTxt, ImmutableList<SourcePath> resDirectories) {
+     return new GenerateStringSourceMap(
+         buildTarget.withAppendedFlavors(GENERATE_STRING_SOURCE_MAP_FLAVOR),
+         projectFilesystem,
+-        ruleFinder);
++        ruleFinder,
++        pathToRDotTxt,
++        resDirectories);
+   }
+ 
+   private ResourcesFilter createResourcesFilter(
+diff --git a/src/com/facebook/buck/android/GenStringSourceMapStep.java b/src/com/facebook/buck/android/GenStringSourceMapStep.java
+index fac2312..18138e3 100644
+--- a/src/com/facebook/buck/android/GenStringSourceMapStep.java
++++ b/src/com/facebook/buck/android/GenStringSourceMapStep.java
+@@ -36,57 +36,6 @@ import org.w3c.dom.Node;
+ import org.w3c.dom.NodeList;
+ import org.xml.sax.SAXException;
+ 
+-/**
+- * This class implements a Buck build step that will generate a JSON file with the following info
+- * for each &lt;string&gt;, &lt;plurals&gt; and &lt;string-array&gt; resource found in the
+- * strings.xml files for each resource directory:
+- *
+- * <p>
+- *
+- * <pre>
+- * android_resource_name : {
+- *   androidResourceId,
+- *   stringsXmlPath
+- * }
+- * </pre>
+- *
+- * <p>where:
+- *
+- * <ul>
+- *   <li>androidResourceId is the integer value, assigned by aapt, extracted from R.txt
+- *   <li>stringsXmlPath is the path to the first strings.xml file where this string resource was
+- *       found.
+- * </ul>
+- *
+- * <p>Example:
+- *
+- * <pre>
+- * {
+- *   "strings": {
+- *     "thread_list_new_message_button": {
+- *       "androidResourceId":"0x7f0800e6",
+- *       "stringsXmlPath":"android_res/com/facebook/messaging/res/values/strings.xml"
+- *     },
+- *     "bug_report_category_lock_screen": {
+- *       "androidResourceId":"0x7f080489",
+- *       "stringsXmlPath":"android_res/com/facebook/bugreporter/res/values/strings.xml"
+- *     }
+- *   },
+- *   "plurals": {
+- *     "like_count": {
+- *       "androidResourceId": "0x7f080480",
+- *       "stringsXmlPath":"android_res/com/facebook/likes/res/values/strings.xml"
+- *     }
+- *   },
+- *   "string-arrays": {
+- *     "share_types": {
+- *       "androidResourceId": "0x7f080470",
+- *       "stringsXmlPath":"android_res/com/facebook/share/res/values/strings.xml"
+- *     }
+- *   }
+- * }
+- * </pre>
+- */
+ public class GenStringSourceMapStep extends AbstractExecutionStep {
+ 
+   private final ProjectFilesystem filesystem;
+diff --git a/src/com/facebook/buck/android/GenerateStringSourceMap.java b/src/com/facebook/buck/android/GenerateStringSourceMap.java
+index 8631847..4223ed0 100644
+--- a/src/com/facebook/buck/android/GenerateStringSourceMap.java
++++ b/src/com/facebook/buck/android/GenerateStringSourceMap.java
+@@ -29,9 +29,9 @@ import com.facebook.buck.rules.ExplicitBuildTargetSourcePath;
+ import com.facebook.buck.rules.HasRuntimeDeps;
+ import com.facebook.buck.rules.SourcePath;
+ import com.facebook.buck.rules.SourcePathRuleFinder;
++import com.facebook.buck.rules.SourcePathResolver;
+ import com.facebook.buck.step.Step;
+ import com.facebook.buck.step.fs.MakeCleanDirectoryStep;
+-import com.facebook.buck.step.fs.WriteFileStep;
+ import com.facebook.buck.util.MoreCollectors;
+ import com.google.common.collect.ImmutableList;
+ import java.nio.file.Path;
+@@ -41,17 +41,27 @@ import javax.annotation.Nullable;
+ 
+ public class GenerateStringSourceMap extends AbstractBuildRule implements HasRuntimeDeps {
+   private final SourcePathRuleFinder ruleFinder;
+-  // TODO(gvbharath): Create SourcePath fields for any input files needed
+-  // ...
+-  // @AddToRuleKey private final ImmutableList<SourcePath> resources;
+-  // @AddToRuleKey private final SourcePath someInput;
++  @AddToRuleKey private final SourcePath pathToRDotTxtFile;
++  @AddToRuleKey private final ImmutableList<SourcePath> resDirectories;
+ 
+   protected GenerateStringSourceMap(
+       BuildTarget buildTarget,
+       ProjectFilesystem projectFilesystem,
+-      SourcePathRuleFinder ruleFinder) {
++      SourcePathRuleFinder ruleFinder,
++      SourcePath pathToRDotTxtFile,
++      ImmutableList<SourcePath> resDirectories) {
+     super(buildTarget, projectFilesystem);
+     this.ruleFinder = ruleFinder;
++    this.pathToRDotTxtFile = pathToRDotTxtFile;
++    this.resDirectories = resDirectories;
++  }
++
++  private ImmutableList<Path> getRelativeResDirectories(
++      ProjectFilesystem filesystem, SourcePathResolver resolver) {
++    return resDirectories
++        .stream()
++        .map(d -> filesystem.relativize(resolver.getAbsolutePath(d)))
++        .collect(MoreCollectors.toImmutableList());
+   }
+ 
+   @Override
+@@ -71,12 +81,17 @@ public class GenerateStringSourceMap extends AbstractBuildRule implements HasRun
+             BuildCellRelativePath.fromCellRelativePath(
+                 context.getBuildCellRootPath(), getProjectFilesystem(), outputDirPath)));
+ 
+-    // TODO(gvbharath): Construct this step. See GenerateRDotJava.
+-    // GenStringSourceMapStep genNativeStringInfo = ...;
+-    // steps.add(genNativeStringInfo);
+-    steps.add(
+-        new WriteFileStep(
+-            getProjectFilesystem(), "some data", outputDirPath.resolve("map.json"), false));
++    // Add the step that parses R.txt and all the strings.xml files, and
++    // produces a JSON with android resource id's and xml paths for each string resource.
++    SourcePathResolver resolver = context.getSourcePathResolver();
++    Path rDotTxtPath = resolver.getAbsolutePath(pathToRDotTxtFile);
++    GenStringSourceMapStep genNativeStringInfo =
++        new GenStringSourceMapStep(
++            getProjectFilesystem(),
++            rDotTxtPath.getParent(),
++            getRelativeResDirectories(getProjectFilesystem(), resolver),
++            outputDirPath);
++    steps.add(genNativeStringInfo);
+ 
+     // Cache the generated strings.json file, it will be stored inside outputDirPath
+     buildableContext.recordArtifact(outputDirPath);
+@@ -97,9 +112,6 @@ public class GenerateStringSourceMap extends AbstractBuildRule implements HasRun
+ 
+   @Override
+   public Stream<BuildTarget> getRuntimeDeps(SourcePathRuleFinder ruleFinder) {
+-    // TODO(gvbharath): Construct list of SourcePaths that need to exist after building this rule
+-    // (whatever is specified in the map that we need to also access).
+-    ImmutableList<SourcePath> inputs = ImmutableList.of();
+-    return ruleFinder.filterBuildRuleInputs(inputs).stream().map(BuildRule::getBuildTarget);
++    return ruleFinder.filterBuildRuleInputs(resDirectories).stream().map(BuildRule::getBuildTarget);
+   }
+ }
